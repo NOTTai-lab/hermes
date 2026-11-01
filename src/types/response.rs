@@ -38,4 +38,43 @@ pub struct FetchResponse {
     pub cached: bool,
     /// RFC 3339 timestamp of when the request was originally executed.
     pub fetched_at: String,
+    /// Leaf certificate the upstream presented on an `https` Tier 0 fetch.
+    /// Absent for plain HTTP, browser rendering, or a certificate Hermes
+    /// could not parse. Older cached entries have no such field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsCertificate>,
+}
+
+/// Facts about the upstream server's leaf certificate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TlsCertificate {
+    /// Start of validity, RFC 3339 UTC.
+    pub not_before: String,
+    /// End of validity, RFC 3339 UTC.
+    pub not_after: String,
+    /// Issuer organisation, or its common name when there is none.
+    pub issuer: Option<String>,
+    /// Subject common name.
+    pub subject: Option<String>,
+    /// DNS names from the subject alternative name extension (at most 100).
+    pub dns_names: Vec<String>,
+    /// SHA-256 of the DER certificate, lowercase hex.
+    pub sha256: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_entries_without_tls_still_parse() {
+        let json = r#"{"status":200,"headers":{},"body":"","body_encoding":"utf8","render":"none","cached":false,"fetched_at":"2026-11-01T00:00:00Z"}"#;
+        let response: FetchResponse = serde_json::from_str(json).expect("old shape parses");
+        assert!(response.tls.is_none());
+        assert!(
+            !serde_json::to_string(&response)
+                .expect("serialize")
+                .contains("\"tls\"")
+        );
+    }
 }

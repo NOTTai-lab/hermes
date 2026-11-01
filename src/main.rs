@@ -15,10 +15,12 @@ use tracing_subscriber::prelude::*;
 mod cache;
 mod config;
 mod fetch;
+mod guard;
 mod handlers;
 mod limiter;
 mod render;
 mod robots;
+mod tls;
 mod types;
 mod validate;
 
@@ -39,9 +41,16 @@ async fn main() {
 
     let config = Config::from_env();
 
+    if config.allow_private_targets {
+        tracing::warn!(
+            "ALLOW_PRIVATE_TARGETS is set: hostnames resolving to private addresses are reachable"
+        );
+    }
+
     let fetcher = Arc::new(Fetcher::new(
         config.user_agent.clone(),
         config.max_body_bytes,
+        config.allow_private_targets,
     ));
 
     let renderer = match (&config.cf_api_token, &config.cf_account_id) {

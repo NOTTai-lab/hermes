@@ -265,7 +265,7 @@ pub async fn fetch_stream(
     let upstream = builder
         .send()
         .await
-        .map_err(|e| AppError::FetchFailed(e.to_string()))?;
+        .map_err(|e| AppError::FetchFailed(crate::guard::describe_fetch_error(e)))?;
 
     let status = axum::http::StatusCode::from_u16(upstream.status().as_u16())
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);

@@ -157,6 +157,7 @@ impl BrowserRenderer {
             render: RenderMode::Browser,
             cached: false,
             fetched_at: chrono::Utc::now().to_rfc3339(),
+            tls: None,
         })
     }
 }

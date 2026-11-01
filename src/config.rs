@@ -43,6 +43,12 @@ pub struct Config {
     /// networks. Always place Hermes behind TLS so the key is not sent in clear
     /// text.
     pub api_key: Option<String>,
+    /// Skip the resolve-time check that refuses hostnames pointing at
+    /// loopback, private or other non-public addresses.
+    /// Env: `ALLOW_PRIVATE_TARGETS`. Default: `false`. **Local development
+    /// only** — never set it where Hermes can reach an internal network.
+    /// IP-literal URLs and redirects are validated either way.
+    pub allow_private_targets: bool,
 }
 
 impl Default for Config {
@@ -57,6 +63,7 @@ impl Default for Config {
             cf_api_token: None,
             cf_account_id: None,
             api_key: None,
+            allow_private_targets: false,
         }
     }
 }
@@ -81,6 +88,7 @@ impl Config {
             cf_api_token: env::var("CF_API_TOKEN").ok(),
             cf_account_id: env::var("CF_ACCOUNT_ID").ok(),
             api_key: env::var("HERMES_API_KEY").ok().filter(|k| !k.is_empty()),
+            allow_private_targets: get_env_parse("ALLOW_PRIVATE_TARGETS", d.allow_private_targets),
         }
     }
 }

@@ -6,11 +6,14 @@
 //! JSON envelope.
 
 use crate::types::{BodyEncoding, FetchRequest, FetchResponse, RenderMode};
+use crate::{guard, tls};
 use anyhow::Context;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use reqwest::tls::TlsInfo;
 use reqwest::{Client, Method};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Tier 0 HTTP fetcher backed by a shared `reqwest` connection pool.
@@ -37,23 +40,23 @@ impl Fetcher {
     /// Both the redirect-following and no-redirect clients are configured with:
     /// - Up to 10 idle connections per host.
     /// - 60-second TCP keep-alive.
+    /// - TLS connection info, so responses can report the peer certificate.
+    /// - The public-address resolver (see [`Fetcher::builder`]).
+    ///
+    /// The redirect-following client re-validates every hop
+    /// ([`guard::redirect_policy`]).
     ///
     /// # Panics
     ///
     /// Panics when the TLS backend cannot be initialised (should never happen
     /// in a correctly compiled binary).
-    pub fn new(user_agent: String, max_body_bytes: usize) -> Self {
-        let client = Client::builder()
-            .user_agent(&user_agent)
-            .pool_max_idle_per_host(10)
-            .tcp_keepalive(Duration::from_secs(60))
+    pub fn new(user_agent: String, max_body_bytes: usize, allow_private_targets: bool) -> Self {
+        let client = Self::builder(&user_agent, allow_private_targets)
+            .redirect(guard::redirect_policy())
             .build()
             .expect("failed to build reqwest client");
 
-        let no_redirect_client = Client::builder()
-            .user_agent(&user_agent)
-            .pool_max_idle_per_host(10)
-            .tcp_keepalive(Duration::from_secs(60))
+        let no_redirect_client = Self::builder(&user_agent, allow_private_targets)
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build no-redirect reqwest client");
@@ -62,6 +65,22 @@ impl Fetcher {
             client,
             no_redirect_client,
             max_body_bytes,
+        }
+    }
+
+    /// Settings shared by both clients. Unless `allow_private_targets` (local
+    /// development only), hostnames that resolve to non-public addresses are
+    /// refused at connect time, which also covers redirects and DNS rebinding.
+    fn builder(user_agent: &str, allow_private_targets: bool) -> reqwest::ClientBuilder {
+        let builder = Client::builder()
+            .user_agent(user_agent)
+            .pool_max_idle_per_host(10)
+            .tcp_keepalive(Duration::from_secs(60))
+            .tls_info(true);
+        if allow_private_targets {
+            builder
+        } else {
+            builder.dns_resolver(Arc::new(guard::PublicOnlyResolver))
         }
     }
 
@@ -99,9 +118,17 @@ impl Fetcher {
             builder = builder.body(body);
         }
 
-        let response = builder.send().await.context("request failed")?;
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!(guard::describe_fetch_error(e)))?;
 
         let status = response.status().as_u16();
+        let tls = response
+            .extensions()
+            .get::<TlsInfo>()
+            .and_then(TlsInfo::peer_certificate)
+            .and_then(tls::parse_peer_certificate);
 
         let response_headers: HashMap<String, String> = response
             .headers()
@@ -135,6 +162,7 @@ impl Fetcher {
             render: RenderMode::None,
             cached: false,
             fetched_at: chrono::Utc::now().to_rfc3339(),
+            tls,
         })
     }
 }

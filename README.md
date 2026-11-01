@@ -10,7 +10,8 @@ Hermes is a standalone Rust microservice that acts as the **single outbound HTTP
 - **Robots.txt compliance** — automatically checked before every fetch (configurable per-request). Keeps the crawler well-behaved by default.
 - **Crawl delay support** — respects per-domain rate limits, configurable per-request.
 - **Multiple render tiers** — plain HTTP for speed, JS-rendered via Cloudflare Browser Rendering when needed, residential proxy reserved for v2.
-- **SSRF protection** — rejects requests targeting loopback, private, link-local, CGNAT, and cloud-metadata IP ranges. Only `http`/`https` schemes are allowed.
+- **SSRF protection** — rejects requests targeting loopback, private, link-local, CGNAT, and cloud-metadata IP ranges, whether written as an IP literal, reached through DNS (hostnames are resolved by a resolver that drops non-public addresses, which also defeats DNS rebinding) or through a redirect (every hop is re-validated). Only `http`/`https` schemes are allowed.
+- **TLS facts** — `https` Tier 0 responses report the leaf certificate the server presented (validity, issuer, DNS names), so callers can watch certificates without opening connections themselves.
 - **Request validation** — enforces upper bounds on timeout, crawl delay, TTL, and header count to prevent resource exhaustion.
 - **Optional bearer-token auth** — set `HERMES_API_KEY` to require `Authorization: Bearer <key>` on all non-health endpoints.
 - **Future-proof architecture** — rate limiting, blocked domain lists, audit logging, proxy rotation, custom headers — all added here once, zero changes in module code.
@@ -162,7 +163,15 @@ curl -X POST http://localhost:3001/fetch \
   "body_encoding": "utf8",
   "render": "none",
   "cached": false,
-  "fetched_at": "2026-04-26T10:00:00Z"
+  "fetched_at": "2026-04-26T10:00:00Z",
+  "tls": {
+    "not_before": "2026-03-01T00:00:00+00:00",
+    "not_after": "2026-05-30T23:59:59+00:00",
+    "issuer": "Let's Encrypt",
+    "subject": "example.com",
+    "dns_names": ["example.com", "www.example.com"],
+    "sha256": "3f1c…"
+  }
 }
 ```
 
@@ -209,6 +218,7 @@ curl -X POST http://localhost:3001/fetch/stream \
 | `render` | enum | Which tier actually executed this request |
 | `cached` | bool | `true` if served from Redis cache |
 | `fetched_at` | string | RFC3339 UTC timestamp of the original live fetch |
+| `tls` | object, optional | Leaf certificate presented on an `https` Tier 0 fetch: `not_before`, `not_after` (RFC 3339), `issuer` (organisation, else common name), `subject` (common name), `dns_names` (SAN, at most 100), `sha256` (of the DER). Absent for plain HTTP, browser rendering, unparsable certificates and older cache entries |
 
 ## Configuration
 
@@ -228,6 +238,9 @@ MAX_BODY_BYTES=10485760            # Max response body size (10 MiB)
 # Security (recommended in production)
 HERMES_API_KEY=                    # Bearer token required on /fetch and /fetch/stream.
                                    # Leave unset to disable auth (trusted-network only).
+ALLOW_PRIVATE_TARGETS=false        # Local development only: let hostnames that resolve to
+                                   # private addresses through. IP literals and redirects
+                                   # are validated either way.
                                    # Always pair with TLS so the key is not sent in clear text.
 
 # Cloudflare Browser Rendering (optional, Tier 1)
@@ -341,7 +354,7 @@ All errors return JSON with a machine-readable `code` and a human-readable `erro
 
 | Code | HTTP | Meaning |
 |---|---|---|
-| `FETCH_FAILED` | 502 | Upstream request failed (timeout, DNS, connection refused) |
+| `FETCH_FAILED` | 502 | Upstream request failed. The message is `request failed [{kind}]: {detail}` with the URL removed; `kind` is one of `blocked_target`, `timeout`, `tls_certificate`, `tls`, `dns`, `redirect`, `connect`, `other` |
 | `FORBIDDEN` | 403 | Blocked by robots.txt |
 | `BAD_REQUEST` | 400 | Invalid URL, SSRF target, or out-of-range field value |
 | `NOT_IMPLEMENTED` | 501 | Requested render tier not available |
@@ -371,6 +384,8 @@ hermes/
 │   ├── main.rs           # App entry point, router, startup
 │   ├── config.rs         # Environment-based config
 │   ├── validate.rs       # URL validation (SSRF, scheme) + request field limits
+│   ├── guard.rs          # Resolve-time and redirect SSRF guards, upstream error classification
+│   ├── tls.rs            # Peer certificate facts for responses
 │   ├── cache.rs          # Redis response cache (ConnectionManager)
 │   ├── limiter.rs        # Per-domain concurrency control
 │   ├── robots.rs         # Robots.txt compliance (ConnectionManager)
@@ -545,6 +560,10 @@ Set the `Authorization: Bearer <key>` header to match the `HERMES_API_KEY` confi
 ### "scheme 'X' not allowed" or "target IP X is not routable" (400)
 
 The target URL failed SSRF validation. Only `http`/`https` URLs pointing to public IP addresses are accepted.
+
+### "request failed [blocked_target]" (502)
+
+The hostname resolved only to non-public addresses, or a redirect pointed at one. This is the SSRF guard working. For local development against private hosts, set `ALLOW_PRIVATE_TARGETS=true`.
 
 ### Slow responses
 

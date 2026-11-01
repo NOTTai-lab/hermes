@@ -13,4 +13,4 @@ pub mod response;
 
 pub use common::HealthResponse;
 pub use request::{FetchRequest, RenderMode, RenderOutput};
-pub use response::{BodyEncoding, FetchResponse};
+pub use response::{BodyEncoding, FetchResponse, TlsCertificate};
